@@ -2,6 +2,7 @@
 FROM ubuntu:24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
+ARG ORT_VERSION=1.24.3
 
 RUN apt-get update && apt-get install -y \
     build-essential \
@@ -11,10 +12,14 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     python3-venv \
+    wget \
+    ca-certificates \
+    tar \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# Python venv
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
@@ -29,12 +34,23 @@ RUN pip install --no-cache-dir \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# ONNX Runtime C++ package
+WORKDIR /opt
+RUN wget -O onnxruntime.tgz \
+    https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz \
+    && tar -xzf onnxruntime.tgz \
+    && mv onnxruntime-linux-x64-${ORT_VERSION} /opt/onnxruntime \
+    && rm onnxruntime.tgz
+
+WORKDIR /app
 COPY CMakeLists.txt .
 COPY draw_boxes.cpp .
 COPY main.cpp .
 COPY yolo_inference.py .
 
-RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+RUN cmake -S . -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DONNXRUNTIME_ROOT=/opt/onnxruntime \
     && cmake --build build -j
 
 # ---- runtime stage ----
@@ -54,6 +70,10 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+
+# ONNX Runtime shared library for C++
+COPY --from=builder /opt/onnxruntime/lib/libonnxruntime.so* /usr/local/lib/
+ENV LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH}
 
 WORKDIR /work
 

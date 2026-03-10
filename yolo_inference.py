@@ -175,7 +175,14 @@ def main():
     #   best.onnx
     #
     # That ONNX file is the artifact you will likely want for C++ inference.
-    exported = YOLO(str(best_pt)).export(format="onnx", opset=20)
+    exported = YOLO(str(best_pt)).export(
+        format="onnx",
+        imgsz=640,
+        dynamic=False,
+        simplify=True,
+        nms=True,
+        opset=20
+    )
     print(f"exported={exported}", flush=True)
 
 

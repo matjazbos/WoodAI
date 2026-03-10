@@ -6,10 +6,26 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(OpenCV REQUIRED)
 
+if(NOT DEFINED ONNXRUNTIME_ROOT)
+    message(FATAL_ERROR "ONNXRUNTIME_ROOT is not set")
+endif()
+
 add_executable(draw_boxes draw_boxes.cpp)
 target_link_libraries(draw_boxes PRIVATE ${OpenCV_LIBS})
 target_include_directories(draw_boxes PRIVATE ${OpenCV_INCLUDE_DIRS})
 
 add_executable(wood_ai main.cpp)
-target_link_libraries(wood_ai PRIVATE ${OpenCV_LIBS})
-target_include_directories(wood_ai PRIVATE ${OpenCV_INCLUDE_DIRS})
+
+target_include_directories(wood_ai PRIVATE
+    ${OpenCV_INCLUDE_DIRS}
+    ${ONNXRUNTIME_ROOT}/include
+)
+
+target_link_directories(wood_ai PRIVATE
+    ${ONNXRUNTIME_ROOT}/lib
+)
+
+target_link_libraries(wood_ai PRIVATE
+    ${OpenCV_LIBS}
+    onnxruntime
+)

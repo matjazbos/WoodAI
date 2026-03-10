@@ -11,3 +11,8 @@ This project trains a YOLO-based object detector to identify wood knots in indiv
 
 ### Final image
     docker run --rm --gpus all --shm-size=2g --entrypoint python --mount type=bind,src="${PWD}",target=/workdir wood-ai -u /usr/local/bin/yolo_inference.py --data-root /workdir/WoodDataset --work-dir /tmp/yolo_dataset --output /workdir/output/runs --batch-size 40 --epochs 30 --workers 4
+
+
+## Run classifier
+
+    docker run --rm --mount type=bind,src="${PWD}",target=/workdir wood-ai 
