@@ -10,10 +10,6 @@ if(NOT DEFINED ONNXRUNTIME_ROOT)
     message(FATAL_ERROR "ONNXRUNTIME_ROOT is not set")
 endif()
 
-add_executable(draw_boxes draw_boxes.cpp)
-target_link_libraries(draw_boxes PRIVATE ${OpenCV_LIBS})
-target_include_directories(draw_boxes PRIVATE ${OpenCV_INCLUDE_DIRS})
-
 add_executable(wood_ai main.cpp)
 
 target_include_directories(wood_ai PRIVATE

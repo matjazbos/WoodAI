@@ -4,7 +4,48 @@
 #include <onnxruntime_cxx_api.h>
 #include <iostream>
 #include <array>
+#include <string>
+#include <regex>
+#include <filesystem>
 
+namespace fs = std::filesystem;
+
+const int W = 640;
+const int H = 640;
+const float CONF_THRESH = 0.25f;
+const std::string MODEL_PATH = "/workdir/output/runs/wood_knots/weights/best.onnx";
+const std::string TMP_OUTPUT_LOCATION = "/tmp/wood_ai_output/";
+const fs::path IMG_DIR = "/workdir/WoodDataset/images";
+
+std::vector<fs::path> get_matching_files(const fs::path& dir, int number) {
+    std::vector<std::pair<int, fs::path>> temp;
+    std::regex pattern("^" + std::to_string(number) + "_([0-9]+)\\.png$");
+
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+
+        const std::string filename = entry.path().filename().string();
+        std::smatch match;
+        if (std::regex_match(filename, match, pattern)) {
+            int index = std::stoi(match[1].str());
+            temp.push_back({index, entry.path()});
+        }
+    }
+
+    std::sort(temp.begin(), temp.end(),
+              [](const auto& a, const auto& b) {
+                  return a.first < b.first;
+              });
+
+    std::vector<fs::path> result;
+    for (const auto& [index, path] : temp) {
+        result.push_back(path);
+    }
+
+    return result;
+}
 
 cv::Mat stitchImagesHorizontal(const std::vector<cv::Mat>& images) {
     if (images.empty()) 
@@ -30,40 +71,13 @@ cv::Mat stitchImagesHorizontal(const std::vector<cv::Mat>& images) {
     return out;
 }
 
-    // std::vector<cv::Mat> images = {
-    //     cv::imread("/workdir/WoodDataset/images/0_0.png"),
-    //     cv::imread("/workdir/WoodDataset/images/0_1.png"),
-    //     cv::imread("/workdir/WoodDataset/images/0_5.png"),
-    //     cv::imread("/workdir/WoodDataset/images/0_6.png")
-    // };
-
-    // cv::Mat stitched = stitchImagesHorizontal(images);
-    // cv::imwrite("/workdir/output/stitched.png", stitched);
-
-
-
-int main(int argc, char* argv[]) {
-
-    if (argc != 2) {
-        std::cerr << "Usage: wood_ai <image_name>" << std::endl;
-        return 1;
-    }
-
-    const std::string imageName = argv[1];
-
-    const char* model_path = "/workdir/output/runs/wood_knots/weights/best.onnx";
-    const std::string image_path = "/workdir/WoodDataset/images/" + imageName;
-
-    const int W = 640;
-    const int H = 640;
-    const float CONF_THRESH = 0.25f;
-
+int infer(const std::string& image_path, Ort::Value& infer_out, cv::Mat& original_img_out){
 
     // ONNX Runtime session
     Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "yolo");
     Ort::SessionOptions so;
     so.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
-    Ort::Session session(env, model_path, so);
+    Ort::Session session(env, MODEL_PATH.c_str(), so);
 
     Ort::AllocatorWithDefaultOptions allocator;
     auto input_name_alloc = session.GetInputNameAllocated(0, allocator);
@@ -79,7 +93,7 @@ int main(int argc, char* argv[]) {
     }
 
     // Keep original for drawing
-    cv::Mat original = img.clone();
+    original_img_out = img.clone();
 
     // Minimal preprocessing: resize, BGR->RGB, float32, [0,1], HWC->CHW
     cv::Mat resized, rgb, f32;
@@ -124,9 +138,9 @@ int main(int argc, char* argv[]) {
     auto info = out.GetTensorTypeAndShapeInfo();
     auto shape = info.GetShape();
 
-    std::cout << "Output shape: ";
-    for (auto d : shape) std::cout << d << " ";
-    std::cout << "\n";
+    // std::cout << "Output shape: ";
+    // for (auto d : shape) std::cout << d << " ";
+    // std::cout << "\n";
 
     // Expecting [1, 300, 6]
     if (shape.size() != 3 || shape[0] != 1 || shape[2] != 6) {
@@ -134,18 +148,26 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    infer_out = std::move(outputs[0]);
+    return 0;
+}
 
+void tag_image(Ort::Value& infer_output, cv::Mat& original_img, size_t idx){
+    auto info = infer_output.GetTensorTypeAndShapeInfo();
+    auto shape = info.GetShape();
 
-
-
-    float* data = out.GetTensorMutableData<float>();
+    if (shape.size() != 3 || shape[0] != 1 || shape[2] != 6) {
+        throw std::runtime_error("Invalid output shape in tag_image");
+    }
 
     const int num_det = static_cast<int>(shape[1]);
-    const int fields = 6;
+    const int fields = static_cast<int>(shape[2]);
+
+    float* data = infer_output.GetTensorMutableData<float>();
 
     // Scale from 640x640 back to original image size
-    const float sx = static_cast<float>(original.cols) / W;
-    const float sy = static_cast<float>(original.rows) / H;
+    const float sx = static_cast<float>(original_img.cols) / W;
+    const float sy = static_cast<float>(original_img.rows) / H;
 
     for (int i = 0; i < num_det; ++i) {
         float x1   = data[i * fields + 0];
@@ -160,17 +182,17 @@ int main(int argc, char* argv[]) {
         }
 
         // Map back to original image coordinates
-        int left   = std::max(0, std::min(static_cast<int>(x1 * sx), original.cols - 1));
-        int top    = std::max(0, std::min(static_cast<int>(y1 * sy), original.rows - 1));
-        int right  = std::max(0, std::min(static_cast<int>(x2 * sx), original.cols - 1));
-        int bottom = std::max(0, std::min(static_cast<int>(y2 * sy), original.rows - 1));
+        int left   = std::max(0, std::min(static_cast<int>(x1 * sx), original_img.cols - 1));
+        int top    = std::max(0, std::min(static_cast<int>(y1 * sy), original_img.rows - 1));
+        int right  = std::max(0, std::min(static_cast<int>(x2 * sx), original_img.cols - 1));
+        int bottom = std::max(0, std::min(static_cast<int>(y2 * sy), original_img.rows - 1));
 
         if (right <= left || bottom <= top) {
             continue;
         }
 
         cv::rectangle(
-            original,
+            original_img,
             cv::Point(left, top),
             cv::Point(right, bottom),
             cv::Scalar(0, 255, 0),
@@ -185,7 +207,7 @@ int main(int argc, char* argv[]) {
 
         int text_y = std::max(top, text_size.height + 4);
         cv::rectangle(
-            original,
+            original_img,
             cv::Point(left, text_y - text_size.height - 4),
             cv::Point(left + text_size.width, text_y + baseline - 4),
             cv::Scalar(0, 255, 0),
@@ -193,7 +215,7 @@ int main(int argc, char* argv[]) {
         );
 
         cv::putText(
-            original,
+            original_img,
             label,
             cv::Point(left, text_y - 2),
             cv::FONT_HERSHEY_SIMPLEX,
@@ -207,8 +229,64 @@ int main(int argc, char* argv[]) {
                   << "] conf=" << conf << " cls=" << cls << "\n";
     }
 
-    cv::imwrite("/workdir/output/result.jpg", original);
-    std::cout << "Saved result.jpg\n";
+
+    std::string output_loc = TMP_OUTPUT_LOCATION + "result_" + std::to_string(idx) + ".jpg";
+    cv::imwrite(output_loc, original_img);
+    std::cout << output_loc << " saved"  << std::endl;
+}
+
+int process_board(int board_id){
+    auto files = get_matching_files(IMG_DIR, board_id);
+    std::cout << "Found " << files.size() << " files" << std::endl;
+    if (files.empty()) {
+        std::cerr << "No files matched board id " << board_id << std::endl;
+        return 1;
+    }
+
+    size_t idx = 0;
+
+    for (const auto& image_path : files) {
+        std::cout << image_path << std::endl;
+
+        cv::Mat original_img;
+        Ort::Value infer_out;
+
+        int infer_status = infer(image_path, infer_out, original_img);
+        if(infer_status != 0){
+            return infer_status;
+        }
+        tag_image(infer_out, original_img, idx++);
+    }
+
+    std::vector<cv::Mat> images;
+
+    for (size_t i = 0; i < idx; i++){
+
+        images.push_back(cv::imread(TMP_OUTPUT_LOCATION + "result_" + std::to_string(i) + ".jpg"));
+    }
+
+    cv::Mat stitched = stitchImagesHorizontal(images);
+    cv::imwrite("/workdir/output/stitched.png", stitched);
 
     return 0;
+}
+
+
+int main(int argc, char* argv[]) {
+
+    int status;
+    fs::create_directories(TMP_OUTPUT_LOCATION);
+
+    if (argc == 2) {
+        const std::string board_id_str = argv[1];
+        int board_id = std::stoi(board_id_str);
+        status = process_board(board_id);
+    } else if (argc == 1){
+
+    } else {
+        std::cerr << "Usage: 'wood_ai' or 'wood_ai <board_id>' " << std::endl;
+        status = 1;
+    }
+
+    return status;
 }
