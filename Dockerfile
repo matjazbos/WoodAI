@@ -32,7 +32,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY CMakeLists.txt .
 COPY draw_boxes.cpp .
 COPY main.cpp .
-COPY inference.py .
 COPY yolo_inference.py .
 
 RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
@@ -60,7 +59,6 @@ WORKDIR /work
 
 COPY --from=builder /app/build/draw_boxes /usr/local/bin/draw_boxes
 COPY --from=builder /app/build/wood_ai /usr/local/bin/wood_ai
-COPY --from=builder /app/inference.py /usr/local/bin/inference.py
 COPY --from=builder /app/yolo_inference.py /usr/local/bin/yolo_inference.py
 
 ENTRYPOINT ["wood_ai"]

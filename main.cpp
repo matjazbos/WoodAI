@@ -35,6 +35,6 @@ int main() {
     };
 
     cv::Mat stitched = stitchImagesHorizontal(images);
-    cv::imwrite("/workdir/output_images/stitched.png", stitched);
+    cv::imwrite("/workdir/output/stitched.png", stitched);
     return 0;
 }

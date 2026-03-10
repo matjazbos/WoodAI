@@ -1,6 +1,5 @@
 import argparse
 import random
-import shutil
 from pathlib import Path
 
 import torch
@@ -34,7 +33,8 @@ def build_yolo_dataset(data_root: Path, work_dir: Path, val_ratio: float, seed: 
     train_images = image_paths[val_count:]
 
     if not train_images:
-        raise RuntimeError("Validation split is too large; no training images remain.")
+        raise RuntimeError(
+            "Validation split is too large; no training images remain.")
 
     work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -175,7 +175,7 @@ def main():
     #   best.onnx
     #
     # That ONNX file is the artifact you will likely want for C++ inference.
-    exported = YOLO(str(best_pt)).export(format="onnx")
+    exported = YOLO(str(best_pt)).export(format="onnx", opset=20)
     print(f"exported={exported}", flush=True)
 
 
