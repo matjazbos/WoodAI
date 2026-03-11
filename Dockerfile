@@ -44,7 +44,6 @@ RUN wget -O onnxruntime.tgz \
 
 WORKDIR /app
 COPY CMakeLists.txt .
-COPY draw_boxes.cpp .
 COPY main.cpp .
 COPY yolo_inference.py .
 
@@ -77,7 +76,6 @@ ENV LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH}
 
 WORKDIR /work
 
-COPY --from=builder /app/build/draw_boxes /usr/local/bin/draw_boxes
 COPY --from=builder /app/build/wood_ai /usr/local/bin/wood_ai
 COPY --from=builder /app/yolo_inference.py /usr/local/bin/yolo_inference.py
 

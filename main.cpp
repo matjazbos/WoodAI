@@ -7,6 +7,8 @@
 #include <string>
 #include <regex>
 #include <filesystem>
+#include <set>
+#include <csignal>
 
 namespace fs = std::filesystem;
 
@@ -15,7 +17,8 @@ const int H = 640;
 const float CONF_THRESH = 0.25f;
 const std::string MODEL_PATH = "/workdir/output/runs/wood_knots/weights/best.onnx";
 const std::string TMP_OUTPUT_LOCATION = "/tmp/wood_ai_output/";
-const fs::path IMG_DIR = "/workdir/WoodDataset/images";
+const std::string BOARDS_OUTPUT_LOCATION = "/workdir/output/boards/";
+const fs::path IMG_DIR = "/workdir/WoodDataset/images/";
 
 std::vector<fs::path> get_matching_files(const fs::path& dir, int number) {
     std::vector<std::pair<int, fs::path>> temp;
@@ -224,20 +227,20 @@ void tag_image(Ort::Value& infer_output, cv::Mat& original_img, size_t idx){
             1
         );
 
-        std::cout << "det " << i
-                  << ": [" << x1 << ", " << y1 << ", " << x2 << ", " << y2
-                  << "] conf=" << conf << " cls=" << cls << "\n";
+        // std::cout << "det " << i
+        //           << ": [" << x1 << ", " << y1 << ", " << x2 << ", " << y2
+        //           << "] conf=" << conf << " cls=" << cls << "\n";
     }
 
 
     std::string output_loc = TMP_OUTPUT_LOCATION + "result_" + std::to_string(idx) + ".jpg";
     cv::imwrite(output_loc, original_img);
-    std::cout << output_loc << " saved"  << std::endl;
+    // std::cout << output_loc << " saved"  << std::endl;
 }
 
 int process_board(int board_id){
     auto files = get_matching_files(IMG_DIR, board_id);
-    std::cout << "Found " << files.size() << " files" << std::endl;
+    // std::cout << "Found " << files.size() << " files" << std::endl;
     if (files.empty()) {
         std::cerr << "No files matched board id " << board_id << std::endl;
         return 1;
@@ -246,7 +249,7 @@ int process_board(int board_id){
     size_t idx = 0;
 
     for (const auto& image_path : files) {
-        std::cout << image_path << std::endl;
+        // std::cout << image_path << std::endl;
 
         cv::Mat original_img;
         Ort::Value infer_out;
@@ -266,23 +269,64 @@ int process_board(int board_id){
     }
 
     cv::Mat stitched = stitchImagesHorizontal(images);
-    cv::imwrite("/workdir/output/stitched.png", stitched);
+    cv::imwrite(BOARDS_OUTPUT_LOCATION + "board_" + std::to_string(board_id) + ".png", stitched);
 
     return 0;
 }
 
+std::vector<int> get_distinct_first_numbers(const fs::path& dir) {
+    std::set<int> numbers;
+    std::regex pattern(R"(^([0-9]+)_[0-9]+\.png$)");
+
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+
+        std::string filename = entry.path().filename().string();
+        std::smatch match;
+
+        if (std::regex_match(filename, match, pattern)) {
+            numbers.insert(std::stoi(match[1].str()));
+        }
+    }
+
+    return std::vector<int>(numbers.begin(), numbers.end());
+}
+
+volatile std::sig_atomic_t g_stop_requested = 0;
+
+void signal_handler(int) {
+    g_stop_requested = 1;
+}
 
 int main(int argc, char* argv[]) {
+    std::signal(SIGINT, signal_handler);
+    std::signal(SIGTERM, signal_handler);
 
-    int status;
     fs::create_directories(TMP_OUTPUT_LOCATION);
+    fs::create_directories(BOARDS_OUTPUT_LOCATION);
+
+    int status = 0;
 
     if (argc == 2) {
         const std::string board_id_str = argv[1];
         int board_id = std::stoi(board_id_str);
         status = process_board(board_id);
     } else if (argc == 1){
-
+        auto board_ids = get_distinct_first_numbers(IMG_DIR);
+        for(const auto& board_id : board_ids) {
+            // std::cout << board_id << std::endl;
+            if (g_stop_requested) {
+                std::cerr << "Interrupted, stopping cleanly.\n";
+                status = 130;
+                break;
+            }
+            status = process_board(board_id);
+            if(status != 0){
+                break;
+            }
+        }
     } else {
         std::cerr << "Usage: 'wood_ai' or 'wood_ai <board_id>' " << std::endl;
         status = 1;

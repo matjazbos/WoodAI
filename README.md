@@ -1,5 +1,5 @@
 # Wood AI
-This project trains a YOLO-based object detector to identify wood knots in individual board-frame images using YOLO-format bounding box annotations. The training pipeline is implemented in Python with PyTorch/Ultralytics and runs in Docker with CUDA support, while the final deployment target is a C++ application built with CMake. The model is exported to ONNX for later inference in C++, where board-level processing and stitching logic can be handled separately from training.
+This project trains a YOLO-based object detector to identify wood knots in individual board-frame images using YOLO-format bounding box annotations. The training pipeline is implemented in Python with PyTorch/Ultralytics and runs in Docker with CUDA support, while the final deployment target is a C++ application built with CMake. The model is exported to ONNX for later inference in C++, where board-level processing and stitching logic are handled separately from training.
 
 ## Build
     docker build -t wood-ai .
@@ -14,5 +14,8 @@ This project trains a YOLO-based object detector to identify wood knots in indiv
 
 
 ## Run classifier
-
+### For all boards:
     docker run --rm --mount type=bind,src="${PWD}",target=/workdir wood-ai 
+
+### For one board:
+    docker run --rm --mount type=bind,src="${PWD}",target=/workdir wood-ai <board id>
