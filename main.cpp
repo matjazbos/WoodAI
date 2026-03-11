@@ -12,14 +12,21 @@
 
 namespace fs = std::filesystem;
 
+// Input size expected by the ONNX model.
 const int W = 640;
 const int H = 640;
+
+// Minimum confidence required to keep a detection.
 const float CONF_THRESH = 0.25f;
+
+// Paths for model, intermediate outputs, final board outputs, and source images.
 const std::string MODEL_PATH = "/workdir/output/runs/wood_knots/weights/best.onnx";
 const std::string TMP_OUTPUT_LOCATION = "/tmp/wood_ai_output/";
 const std::string BOARDS_OUTPUT_LOCATION = "/workdir/output/boards/";
 const fs::path IMG_DIR = "/workdir/WoodDataset/images/";
 
+// Find files in the input directory that match "<board_id>_<index>.png".
+// Returned files are sorted by the trailing index so board segments stay in order.
 std::vector<fs::path> get_matching_files(const fs::path& dir, int number) {
     std::vector<std::pair<int, fs::path>> temp;
     std::regex pattern("^" + std::to_string(number) + "_([0-9]+)\\.png$");
@@ -37,6 +44,7 @@ std::vector<fs::path> get_matching_files(const fs::path& dir, int number) {
         }
     }
 
+    // Sort matched images by segment index.
     std::sort(temp.begin(), temp.end(),
               [](const auto& a, const auto& b) {
                   return a.first < b.first;
@@ -50,6 +58,8 @@ std::vector<fs::path> get_matching_files(const fs::path& dir, int number) {
     return result;
 }
 
+// Concatenate a sequence of images left-to-right into one wide image.
+// All images must share the same height and type.
 cv::Mat stitchImagesHorizontal(const std::vector<cv::Mat>& images) {
     if (images.empty()) 
         throw std::runtime_error("No images provided");
@@ -74,14 +84,20 @@ cv::Mat stitchImagesHorizontal(const std::vector<cv::Mat>& images) {
     return out;
 }
 
+// Run model inference for one image.
+// On success:
+// - infer_out receives the model output tensor
+// - original_img_out receives a copy of the original image for later annotation
 int infer(const std::string& image_path, Ort::Value& infer_out, cv::Mat& original_img_out){
 
     // ONNX Runtime session
+    // Create runtime environment and session for the detector model.
     Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "yolo");
     Ort::SessionOptions so;
     so.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
     Ort::Session session(env, MODEL_PATH.c_str(), so);
 
+    // Query model input and output names.
     Ort::AllocatorWithDefaultOptions allocator;
     auto input_name_alloc = session.GetInputNameAllocated(0, allocator);
     auto output_name_alloc = session.GetOutputNameAllocated(0, allocator);
@@ -104,6 +120,7 @@ int infer(const std::string& image_path, Ort::Value& infer_out, cv::Mat& origina
     cv::cvtColor(resized, rgb, cv::COLOR_BGR2RGB);
     rgb.convertTo(f32, CV_32F, 1.0 / 255.0);
 
+    // Flatten image into CHW tensor layout expected by many vision models.
     std::vector<float> input_tensor_values(3 * W * H);
     size_t idx = 0;
     for (int c = 0; c < 3; ++c) {
@@ -114,6 +131,7 @@ int infer(const std::string& image_path, Ort::Value& infer_out, cv::Mat& origina
         }
     }
 
+    // Input tensor shape: batch=1, channels=3, height=H, width=W.
     std::array<int64_t, 4> input_shape{1, 3, H, W};
     auto mem = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
     Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
@@ -127,6 +145,7 @@ int infer(const std::string& image_path, Ort::Value& infer_out, cv::Mat& origina
     const char* input_names[] = {input_name};
     const char* output_names[] = {output_name};
 
+    // Execute the model and collect outputs.
     auto outputs = session.Run(
         Ort::RunOptions{nullptr},
         input_names,
@@ -146,15 +165,18 @@ int infer(const std::string& image_path, Ort::Value& infer_out, cv::Mat& origina
     // std::cout << "\n";
 
     // Expecting [1, 300, 6]
+    // Each detection row is assumed to be [x1, y1, x2, y2, conf, cls].
     if (shape.size() != 3 || shape[0] != 1 || shape[2] != 6) {
         std::cerr << "Unexpected output shape\n";
         return 1;
     }
 
+    // Move the first output tensor to the caller.
     infer_out = std::move(outputs[0]);
     return 0;
 }
 
+// Draw detections above threshold on the original image and save the result.
 void tag_image(Ort::Value& infer_output, cv::Mat& original_img, size_t idx){
     auto info = infer_output.GetTensorTypeAndShapeInfo();
     auto shape = info.GetShape();
@@ -190,6 +212,7 @@ void tag_image(Ort::Value& infer_output, cv::Mat& original_img, size_t idx){
         int right  = std::max(0, std::min(static_cast<int>(x2 * sx), original_img.cols - 1));
         int bottom = std::max(0, std::min(static_cast<int>(y2 * sy), original_img.rows - 1));
 
+        // Skip invalid or degenerate bounding boxes.
         if (right <= left || bottom <= top) {
             continue;
         }
@@ -202,12 +225,14 @@ void tag_image(Ort::Value& infer_output, cv::Mat& original_img, size_t idx){
             2
         );
 
+        // Use confidence as the display label.
         std::string label = cv::format("%.2f", conf);
         int baseline = 0;
         cv::Size text_size = cv::getTextSize(
             label, cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseline
         );
 
+        // Keep label inside the image vertically.
         int text_y = std::max(top, text_size.height + 4);
         cv::rectangle(
             original_img,
@@ -232,12 +257,13 @@ void tag_image(Ort::Value& infer_output, cv::Mat& original_img, size_t idx){
         //           << "] conf=" << conf << " cls=" << cls << "\n";
     }
 
-
+    // Save this annotated segment to a temporary file for later stitching.
     std::string output_loc = TMP_OUTPUT_LOCATION + "result_" + std::to_string(idx) + ".jpg";
     cv::imwrite(output_loc, original_img);
     // std::cout << output_loc << " saved"  << std::endl;
 }
 
+// Process all image segments for a single board id, annotate them, then stitch them.
 int process_board(int board_id){
     auto files = get_matching_files(IMG_DIR, board_id);
     // std::cout << "Found " << files.size() << " files" << std::endl;
@@ -263,17 +289,19 @@ int process_board(int board_id){
 
     std::vector<cv::Mat> images;
 
+    // Reload all annotated temporary images in order.
     for (size_t i = 0; i < idx; i++){
-
         images.push_back(cv::imread(TMP_OUTPUT_LOCATION + "result_" + std::to_string(i) + ".jpg"));
     }
 
+    // Merge annotated segments into one board-wide image.
     cv::Mat stitched = stitchImagesHorizontal(images);
     cv::imwrite(BOARDS_OUTPUT_LOCATION + "board_" + std::to_string(board_id) + ".png", stitched);
 
     return 0;
 }
 
+// Extract all unique board ids from filenames shaped like "<board_id>_<index>.png".
 std::vector<int> get_distinct_first_numbers(const fs::path& dir) {
     std::set<int> numbers;
     std::regex pattern(R"(^([0-9]+)_[0-9]+\.png$)");
@@ -294,26 +322,32 @@ std::vector<int> get_distinct_first_numbers(const fs::path& dir) {
     return std::vector<int>(numbers.begin(), numbers.end());
 }
 
+// Global stop flag set by signal handlers for graceful interruption.
 volatile std::sig_atomic_t g_stop_requested = 0;
 
+// Async-signal-safe handler: only set a flag.
 void signal_handler(int) {
     g_stop_requested = 1;
 }
 
 int main(int argc, char* argv[]) {
+    // Register handlers so Ctrl+C / termination requests stop the loop cleanly.
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
+    // Ensure output directories exist before processing.
     fs::create_directories(TMP_OUTPUT_LOCATION);
     fs::create_directories(BOARDS_OUTPUT_LOCATION);
 
     int status = 0;
 
     if (argc == 2) {
+        // One argument means: process a single board id.
         const std::string board_id_str = argv[1];
         int board_id = std::stoi(board_id_str);
         status = process_board(board_id);
     } else if (argc == 1){
+        // No arguments means: process every board discovered in IMG_DIR.
         auto board_ids = get_distinct_first_numbers(IMG_DIR);
         for(const auto& board_id : board_ids) {
             // std::cout << board_id << std::endl;
